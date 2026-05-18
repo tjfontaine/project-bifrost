@@ -1,0 +1,9 @@
+# Declarative spec for the redis-uprobe demo.
+# Consumed by ../redis-uprobe/run.sh via examples/_common/run-demo.sh.
+script = "probe.d"
+workload = "auto"
+expect_records = 100
+expect_agg_rows = 1
+runtime_seconds = 16
+agg_names = ["@cmds", "@cmd_lat"]
+description = "Trace processCommand() entry/return on redis-server inside a smolvm guest."

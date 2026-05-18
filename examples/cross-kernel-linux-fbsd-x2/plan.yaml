@@ -1,0 +1,41 @@
+# cross-kernel-linux-fbsd-x2 — cross-kernel acceptance demo.
+#
+# One D source, two targets: Linux smolvm + FreeBSD QEMU, driven by
+# a single `bifrost orchestrate` invocation.  Both targets boot in
+# parallel (the launcher subprocesses race against each other in
+# `cli::launcher::spawn_target`), share one D source, and fold
+# their `@latency` quantize contributions into one cross-target
+# histogram via `merge::CrossTargetAggReducer`.
+#
+# `route_clauses` sends each per-OS clause to the matching guest
+# without the operator having to split the source by hand —
+# `tracepoint:guest:sched:sched_switch` routes to Linux,
+# `profile:::tick-100ms` routes to FreeBSD.
+#
+# `duration_ms: 2000` extends the sampling window beyond the
+# kernel's 500 ms default so the FreeBSD-side `tick-100ms` clause
+# fires at least 10 times before the AGG_SNAPSHOT drain runs.
+
+script_file: examples/cross-kernel-linux-fbsd-x2/trace.d
+targets:
+  - id: linux-a
+    guest_os: linux
+    duration_ms: 2000
+    launcher:
+      kind: smolvm
+      script: host/runtime/smolvm-launch.sh
+      args:
+        - machine
+        - run
+        - -d
+    conduit:
+      # Filled in by the launcher via CONDUIT_BACKEND_PID_FILE.
+      pid: 0
+  - id: fbsd-b
+    guest_os: freebsd
+    duration_ms: 2000
+    launcher:
+      kind: qemu-freebsd
+      script: host/runtime/qemu-launch-freebsd.sh
+    conduit:
+      pid: 0

@@ -1,0 +1,8 @@
+# Declarative spec for the postgres-slow-query demo.
+# See examples/_common/README.md for the harness contract.
+script = "probe.d"
+workload = "auto"
+expect_records = 1
+expect_agg_rows = 0
+runtime_seconds = 16
+description = "Slow-query trace via uprobe at postgres processCommand; alternative to USDT."

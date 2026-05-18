@@ -1,0 +1,42 @@
+# three-kernels — cross-kernel acceptance demo.
+#
+# One D source, THREE kernels: macOS host + Linux smolvm + FreeBSD QEMU.
+# A single `bifrost orchestrate` invocation spawns all three targets,
+# routes each clause to the targets that can attach it, and merges
+# every contribution into one record stream + one cross-target agg
+# table.
+#
+# `route_clauses` (host/bifrost/src/plan.rs) sends each per-OS clause
+# to the matching targets; the shared `@triplet["all"] = count()`
+# folds across all three.  The macos-host arm has no SHM conduit; its
+# launcher (LauncherSpec::MacosHostDtrace) spawns a `dtrace(1)` child
+# whose stdout is parsed by cli::macos_host into the same merger +
+# reducer the SHM-conduit targets feed.
+
+script_file: examples/three-kernels/trace.d
+targets:
+  - id: linux-a
+    guest_os: linux
+    duration_ms: 2000
+    launcher:
+      kind: smolvm
+      script: host/runtime/smolvm-launch.sh
+      args:
+        - machine
+        - run
+        - -d
+    conduit:
+      pid: 0
+  - id: fbsd-b
+    guest_os: freebsd
+    duration_ms: 2000
+    launcher:
+      kind: qemu-freebsd
+      script: host/runtime/qemu-launch-freebsd.sh
+    conduit:
+      pid: 0
+  - id: macos-host
+    guest_os: macos-host
+    duration_ms: 2000
+    launcher:
+      kind: macos-host-dtrace

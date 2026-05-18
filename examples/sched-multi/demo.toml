@@ -1,0 +1,8 @@
+# Declarative spec for the sched-multi demo.
+# See examples/_common/README.md for the harness contract.
+script = "probe.d"
+workload = "auto"
+expect_records = 0
+expect_agg_rows = 1
+runtime_seconds = 16
+description = "Multi-clause scheduler trace under stress-ng — fbt + raw_tracepoint coexistence."

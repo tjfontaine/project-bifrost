@@ -1,0 +1,11 @@
+# Declarative spec for the postgres-usdt demo.
+# NOTE: postgres demo is currently flaky inside smolvm. The harness
+# still recognizes the success path; expect_records is intentionally
+# low (10) until the underlying TSI hijack issue is fixed.
+script = "probe.d"
+workload = "auto"
+expect_records = 10
+expect_agg_rows = 1
+runtime_seconds = 30
+agg_names = ["@queries", "@qlat", "@txn"]
+description = "Trace postgres USDT probes (query/txn/lock/buffer/wal/checkpoint) inside a smolvm guest."

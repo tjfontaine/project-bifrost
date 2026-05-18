@@ -1,0 +1,10 @@
+# Declarative spec for the failed-opens demo.
+# See examples/_common/README.md for the harness contract.
+script = "probe.d"
+workload = "auto"
+# Agg-only demo: probe.d emits no per-fire records, only the
+# `@errs[execname]` snapshot at trace teardown.
+expect_records = 0
+expect_agg_rows = 1
+runtime_seconds = 16
+description = "Trace fbt:guest:do_sys_openat2:return for failed opens (retval < 0) under a mixed cat/ls workload."

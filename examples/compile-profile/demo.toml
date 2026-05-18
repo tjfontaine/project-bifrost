@@ -1,0 +1,8 @@
+# Declarative spec for the compile-profile demo.
+# See examples/_common/README.md for the harness contract.
+script = "probe.d"
+workload = "auto"
+expect_records = 1
+expect_agg_rows = 0
+runtime_seconds = 16
+description = "Compile-profile a build inside the guest via fbt at exec/exit boundaries."

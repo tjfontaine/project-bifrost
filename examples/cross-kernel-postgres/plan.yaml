@@ -1,0 +1,28 @@
+# Cross-kernel Postgres demo plan.
+#
+# Proves the orchestrator isn't shaped around TCP: a different probe
+# surface (USDT on linux Postgres, fbt on FreeBSD VOP_OPEN) under a
+# different workload (pgbench).  Uses the same multi-target plan
+# shape as cross-kernel-tcp — the orchestrator owns lifecycle for
+# both VMs.
+
+script_file: examples/cross-kernel-postgres/trace.d
+targets:
+  - id: linux
+    guest_os: linux
+    launcher:
+      kind: smolvm
+      script: host/runtime/smolvm-launch.sh
+      args:
+        - machine
+        - run
+        - -d
+    conduit:
+      pid: 0
+  - id: freebsd
+    guest_os: freebsd
+    launcher:
+      kind: qemu-freebsd
+      script: host/runtime/qemu-launch-freebsd.sh
+    conduit:
+      pid: 0

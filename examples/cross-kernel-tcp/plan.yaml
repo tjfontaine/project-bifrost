@@ -1,0 +1,33 @@
+# Cross-kernel TCP killer demo plan.
+#
+# Two targets, one D source.  The host orchestrator boots both
+# guests, lowers the D source per-target via TraceTarget::route_probe,
+# drives an identical nginx + ab workload, and emits one merged
+# record stream with side-by-side quantize() histograms in printa.
+#
+# Live status: blocked on the FreeBSD guest kernel wrapper expanding
+# beyond `dtrace:::BEGIN` — the `fbt:kernel:tcp_input:entry` probe on
+# the freebsd target is host-side rejected today by the named
+# preflight in native_trace_record_count.  See guest/freebsd-bifrost/.
+
+script_file: examples/cross-kernel-tcp/trace.d
+targets:
+  - id: linux
+    guest_os: linux
+    launcher:
+      kind: smolvm
+      script: host/runtime/smolvm-launch.sh
+      args:
+        - machine
+        - run
+        - -d
+    conduit:
+      # Filled in by run.sh from the launcher's BACKEND_PID_FILE.
+      pid: 0
+  - id: freebsd
+    guest_os: freebsd
+    launcher:
+      kind: qemu-freebsd
+      script: host/runtime/qemu-launch-freebsd.sh
+    conduit:
+      pid: 0
