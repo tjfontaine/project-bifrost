@@ -1,0 +1,32 @@
+[package]
+name = "bifrost-wire"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Wire-format constants and types shared across the bifrost host CLI, libkrun virtio device, and (via mirrored sources) the guest kernel module"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# `zerocopy_repr` adds zerocopy-derived structs for the wire-format
+# headers (BifrostWrapperHeader, etc.).  Off by default so the
+# guest kernel module — which symlinks/vendors this same lib.rs
+# but can't pull crates outside the kernel-rust ecosystem — keeps
+# compiling.  The host CLI and libkrun enable it explicitly.
+default = []
+zerocopy_repr = ["dep:zerocopy"]
+# `codec` adds the BFR7 encode/decode functions in
+# `bifrost_wire::codec`.  Requires `zerocopy_repr` for the typed
+# headers.  The decoder is pure no_std (returns slice views into
+# the input buffer); the encoder is generic over a `WireSink`
+# trait.  Kernel-side consumers can enable `codec` without `alloc`
+# and supply their own sink (e.g. a `&mut [u8]` adapter).  Host
+# consumers (CLI, libkrun) enable `alloc` to pick up the default
+# `WireSink` impl for `alloc::vec::Vec<u8>`.
+codec = ["zerocopy_repr"]
+alloc = []
+
+[dependencies]
+zerocopy = { version = "0.8", optional = true, features = ["derive"] }
