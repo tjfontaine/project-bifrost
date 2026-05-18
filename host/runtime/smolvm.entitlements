@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required: smolvm dlopens libkrun.dylib which calls into
+         Hypervisor.framework (hv_vm_create etc.). Without this
+         entitlement, hv_vm_create returns non-success on the
+         caller's process, surfacing through libkrun's error chain
+         as the opaque `krun_start_enter -22` (libc EINVAL wrapper).
+         -->
+    <key>com.apple.security.hypervisor</key>
+    <true/>
+
+    <!-- Required: smolvm loads libkrun.dylib + libkrunfw.5.dylib
+         from $DYLD_LIBRARY_PATH (the project's third_party/smolvm/lib/),
+         not from a system path validated against the binary's
+         signature. Without this, dyld rejects the load with a
+         signature/team-id mismatch.
+         -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>
