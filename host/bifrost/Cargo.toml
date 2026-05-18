@@ -1,0 +1,79 @@
+[package]
+name = "bifrost"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[dependencies]
+object = { version = "0.36", default-features = false, features = ["read_core", "elf", "std"] }
+libc = "0.2"
+# Shared wire-format crate.  Single source of truth for BFR7
+# magic, D4_KIND_*, *_PROBE_ID, AGG_KIND_*, PROBE_TYPE_*.
+# `no_std` + dep-free so libkrun can vendor a copy and the guest
+# kernel module mirrors via wire.rs (audited by
+# scripts/check-proto-drift.sh).
+bifrost-wire = { path = "../bifrost-wire", features = ["zerocopy_repr", "codec", "alloc"] }
+# Oxide-style: clap derive for arg parsing + thiserror at module
+# boundaries + anyhow in the binary entry point.  Replaces the
+# hand-rolled parse_args() in cli/args.rs and the
+# Result<T, String> dialect across cli/*.  Per Rain (Oxide) at
+# rust-cli-recommendations.sunshowers.io: "use clap, do not write
+# a parser by hand."
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = "1"
+anyhow = "1"
+bifrost-support = { path = "../bifrost-support" }
+# tracing (Oxide-style observability of the CLI itself, not of
+# the traced process).  We use it for diagnostic stderr lines
+# previously emitted via `eprintln!("[bifrost] ...")`; user-facing
+# stdout output (the indented status lines) stays as `println!`
+# because that IS the CLI's UX.  RUST_LOG=debug surfaces
+# additional internal state once we add `tracing::debug!` /
+# `tracing::span!` instrumentation.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# expectorate (Oxide) — snapshot files for golden-byte tests.  We
+# use it to lock the BFR7 wrapper output for a canonical fixture;
+# byte-for-byte drift surfaces as a test failure with a diff.  Run
+# `EXPECTORATE=overwrite cargo test` to regenerate the fixture
+# after an intentional wire-format change.
+expectorate = "1"
+# control-SHM roundtrip integration tests need the backend-side
+# producer (`ControlShm` / `ControlShmView`) so we can drive both
+# halves of the cmd_ring/rsp_ring contract from a single test
+# binary without spawning conduit-backend.
+krun_virtio_conduit = { package = "krun-virtio-conduit", path = "../virtio-conduit" }
+
+[[bin]]
+name = "dof_dump"
+path = "src/bin/dof_dump.rs"
+
+[[bin]]
+name = "dif_compile"
+path = "src/bin/dif_compile.rs"
+
+[[bin]]
+name = "ksym_test"
+path = "src/bin/ksym_test.rs"
+
+[[bin]]
+name = "bifrost"
+path = "src/bin/bifrost.rs"
+
+[[bin]]
+name = "conduit_shm_diag"
+path = "src/bin/conduit_shm_diag.rs"
+
+# Examples live at the repo root in `examples/` so they're
+# discoverable by anyone browsing the project. Cargo's auto-discovery
+# only looks under the crate dir, so each entry needs an explicit
+# path.
+[[example]]
+name = "btf_kfunc_test"
+path = "../../examples/btf_kfunc_test.rs"
+
+[[example]]
+name = "check_vma_kfunc"
+path = "../../examples/check_vma_kfunc.rs"
