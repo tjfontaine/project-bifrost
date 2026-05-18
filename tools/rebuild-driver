@@ -1,0 +1,350 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# tools/rebuild-driver — Atomic, transactional rebuild pipeline for
+# the bifrost guest driver and the smolvm host binary.
+#
+# WHY THIS EXISTS
+# ---------------
+# Editing `third_party/linux-bifrost/drivers/bifrost/bifrost.rs` used
+# to require six manual steps:
+#
+#   1. sync the .rs into libkrunfw's kernel tree
+#   2. invalidate `.o`/`built-in.a`/vmlinux/kernel.c caches by hand
+#   3. run `build_on_krunvm_persistent.sh` (kbuild inside a krunvm VM)
+#   4. `make libkrunfw.5.dylib` to relink kernel.c → dylib
+#   5. copy the dylibs into `third_party/smolvm/lib/`
+#   6. cargo build smolvm + re-codesign with the hypervisor entitlement
+#
+# Each step had its own freshness check, and the checks did not agree.
+# Different silent failure modes at every step:
+#
+#   - kbuild's incremental build saw an unchanged `bifrost.o` mtime
+#     and skipped relink → kernel.c bundled the OLD object
+#   - libkrunfw's `make all` printed "Nothing to be done for 'all'"
+#     and lied about success
+#   - cargo's build.rs strips the entitlement on every rebuild;
+#     skipping the re-sign caused HV_DENIED (0xfae94007) at boot
+#   - mismatched bifrost.rs between linux-bifrost and libkrunfw's
+#     copy meant the kernel module shipped diverged from the .rs
+#     under VCS, hours of debugging "but I changed it!"
+#
+# Stages here are numbered, atomic, and named. Failure at stage N
+# prints `[rebuild-driver] FAILED at stage N (<name>): <hint>` and
+# exits non-zero. Stamp files under `.bifrost-build-stamps/` track
+# input HEAD SHAs so re-runs skip work that's already current.
+#
+# USAGE
+#   tools/rebuild-driver           # walk all stages
+#   tools/rebuild-driver --help    # print stage list and exit 0
+#
+# This script does NOT use sudo. Run it as your normal user; the
+# project NOPASSWD sudoers entry covers `host/*/*` for cleanup
+# scripts, which this driver does not need.
+#
+# Stages:
+#   0: drift preflight
+#   1: patch sync warning
+#   2: kernel rebuild (kbuild via krunvm)
+#   3: kernel.c → libkrunfw.5.dylib relink
+#   4: dylib copy to third_party/smolvm/lib/
+#   5: cargo smolvm build
+#   6: codesign + entitlement validation
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STAMP_DIR="$ROOT/.bifrost-build-stamps"
+
+# ---------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------
+
+usage() {
+    cat <<'EOF'
+tools/rebuild-driver — atomic bifrost guest+host rebuild
+
+Usage:
+  tools/rebuild-driver           Run all stages
+  tools/rebuild-driver --help    Print this help and exit 0
+
+Stages:
+  0  drift preflight              (scripts/check-proto-drift.sh)
+  1  patch sync warning           (linux-bifrost HEAD vs stamp)
+  2  kernel rebuild               (kbuild inside krunvm Fedora VM)
+  3  kernel.c → libkrunfw.5.dylib (make libkrunfw.5.dylib)
+  4  dylib copy                   (third_party/smolvm/lib/)
+  5  cargo smolvm build           (cargo build --release -p smolvm)
+  6  codesign + validate          (hypervisor entitlement)
+
+Stamp files live in .bifrost-build-stamps/stage-<N>.stamp and contain
+the git HEAD SHA(s) of the inputs used by that stage.
+
+This script does NOT use sudo. Run it as your normal user.
+EOF
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    usage
+    exit 0
+fi
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+mkdir -p "$STAMP_DIR"
+
+CURRENT_STAGE=""
+CURRENT_NAME=""
+
+stage_start() {
+    CURRENT_STAGE="$1"
+    CURRENT_NAME="$2"
+    echo "[rebuild-driver] stage ${CURRENT_STAGE}/6: ${CURRENT_NAME}"
+}
+
+stage_ok() {
+    echo "[rebuild-driver] stage ${CURRENT_STAGE} OK"
+}
+
+fail() {
+    local hint="$1"
+    echo "[rebuild-driver] FAILED at stage ${CURRENT_STAGE} (${CURRENT_NAME}): ${hint}" >&2
+    exit 1
+}
+
+# Trap unexpected errors so the user always sees which stage broke.
+trap 'rc=$?; if [ $rc -ne 0 ]; then echo "[rebuild-driver] FAILED at stage ${CURRENT_STAGE} (${CURRENT_NAME}): unexpected error (exit $rc)" >&2; fi' ERR
+
+# Get the HEAD SHA of a submodule (or main repo) at a given path.
+git_head_at() {
+    local path="$1"
+    ( cd "$path" && git rev-parse HEAD 2>/dev/null ) || echo "unknown"
+}
+
+# ---------------------------------------------------------------------
+# Stage 0 — drift preflight
+# ---------------------------------------------------------------------
+
+stage_start 0 "drift preflight"
+if [ ! -x "$ROOT/scripts/check-proto-drift.sh" ]; then
+    fail "scripts/check-proto-drift.sh not found or not executable"
+fi
+if ! "$ROOT/scripts/check-proto-drift.sh"; then
+    fail "protocol-constant drift detected — fix the offending tree before rebuilding"
+fi
+echo "$(git_head_at "$ROOT")" > "$STAMP_DIR/stage-0.stamp"
+stage_ok
+
+# ---------------------------------------------------------------------
+# Stage 1 — patch sync warning
+# ---------------------------------------------------------------------
+#
+# We compare the HEAD of `third_party/linux-bifrost` against the
+# value we recorded the LAST time stage 1 succeeded. If it changed,
+# the user may need to re-export `patches/` to keep
+# `third_party/smolvm/libkrunfw/patches/` in sync. We only warn here
+# (not fatal) because patch regen is conscious work the user owns.
+
+stage_start 1 "patch sync"
+LINUX_BIFROST="$ROOT/third_party/linux-bifrost"
+if [ ! -d "$LINUX_BIFROST/.git" ] && [ ! -f "$LINUX_BIFROST/.git" ]; then
+    fail "third_party/linux-bifrost is not a git checkout"
+fi
+LB_HEAD="$(git_head_at "$LINUX_BIFROST")"
+STAGE1_STAMP="$STAMP_DIR/stage-1.stamp"
+if [ -f "$STAGE1_STAMP" ]; then
+    PREV_HEAD="$(cat "$STAGE1_STAMP")"
+    if [ "$PREV_HEAD" != "$LB_HEAD" ]; then
+        echo "[rebuild-driver] note: linux-bifrost HEAD changed since last build:"
+        echo "[rebuild-driver]   was:  $PREV_HEAD"
+        echo "[rebuild-driver]   now:  $LB_HEAD"
+        echo "[rebuild-driver] you MAY need to run:"
+        echo "[rebuild-driver]   scripts/sync-linux-patches.sh --export"
+        echo "[rebuild-driver] to regenerate third_party/smolvm/libkrunfw/patches/"
+    fi
+else
+    echo "[rebuild-driver] note: first run, recording linux-bifrost HEAD = $LB_HEAD"
+fi
+echo "$LB_HEAD" > "$STAGE1_STAMP"
+stage_ok
+
+# ---------------------------------------------------------------------
+# Stage 2 — kernel rebuild
+# ---------------------------------------------------------------------
+#
+# Sync canonical bifrost.rs from third_party/linux-bifrost into the
+# libkrunfw kernel tree. If mtimes differ, invalidate the kbuild
+# cache (the .o/.cmd/built-in.a/vmlinux/kernel.c artifacts) so the
+# next build regenerates them. Then run the krunvm-Fedora build
+# script that performs the actual cross-compile.
+#
+# build_on_krunvm_persistent.sh launches a Fedora-in-krunvm VM
+# (because kbuild needs a Linux toolchain) so we can't replace it
+# on macOS — we just orchestrate it.
+
+stage_start 2 "kernel rebuild"
+
+LB_DRIVER="$LINUX_BIFROST/drivers/bifrost"
+LK_KERNEL_DIR="$ROOT/third_party/smolvm/libkrunfw/linux-6.12.76"
+LK_DRIVER="$LK_KERNEL_DIR/drivers/bifrost"
+LK_LIBKRUNFW_DIR="$ROOT/third_party/smolvm/libkrunfw"
+
+if [ ! -f "$LB_DRIVER/bifrost.rs" ]; then
+    fail "canonical bifrost.rs missing at $LB_DRIVER/bifrost.rs"
+fi
+if [ ! -d "$LK_DRIVER" ]; then
+    fail "libkrunfw kernel-tree driver dir missing: $LK_DRIVER"
+fi
+
+# Sync EVERY canonical drivers/bifrost/ source file into the
+# libkrunfw kernel tree, not just bifrost.rs.  History: the original
+# rebuild-driver only synced bifrost.rs because that was the only
+# file that changed across kernel-side commits.  Phase K's commit
+# ce0192b (`bifrost: kfunc manifest`) added function definitions to
+# bifrost_helpers.c, but rebuild-driver's narrow sync left those
+# additions in canonical only.  When my Phase J body deeper (c)
+# attempt triggered the first libkrunfw rebuild needing the manifest
+# functions, the build link-failed with `undefined reference to
+# bifrost_kfunc_manifest_hash`.  Generalizing the sync closes the
+# class.
+#
+# Source-file set: every regular file in the canonical bifrost dir
+# except build artifacts (*.o, .*.cmd, built-in.a, modules.order,
+# *.bak).  rsync is the right tool but isn't always installed on
+# Mac dev hosts; cp + the find-driven exclude list does the same job
+# with a portable shell.
+NEEDS_SYNC=0
+SYNCED_FILES=""
+for src in "$LB_DRIVER"/*; do
+    name="$(basename "$src")"
+    case "$name" in
+        *.o|*.cmd|built-in.a|modules.order|*.bak)
+            continue
+            ;;
+    esac
+    # .* hidden cmd files (kbuild generates `.foo.cmd`) — also skip.
+    case "$name" in
+        .*.cmd)
+            continue
+            ;;
+    esac
+    if [ ! -d "$src" ]; then
+        target="$LK_DRIVER/$name"
+        if [ ! -f "$target" ] || ! cmp -s "$src" "$target"; then
+            NEEDS_SYNC=1
+            cp "$src" "$target"
+            SYNCED_FILES="$SYNCED_FILES $name"
+        fi
+    fi
+done
+
+if [ "$NEEDS_SYNC" -eq 1 ]; then
+    echo "[rebuild-driver] synced canonical drivers/bifrost/ into libkrunfw kernel tree:$SYNCED_FILES"
+    # Invalidate kbuild's incremental cache: the .o has the old
+    # contents and kbuild trusts mtime. Nuke object files, cmd
+    # files, the static archive, vmlinux, and the bundled kernel.c.
+    echo "[rebuild-driver] invalidating kbuild cache (object/cmd/built-in.a/vmlinux/kernel.c)"
+    rm -f "$LK_DRIVER"/*.o \
+          "$LK_DRIVER"/.*.cmd \
+          "$LK_DRIVER"/built-in.a \
+          "$LK_KERNEL_DIR/vmlinux" \
+          "$LK_LIBKRUNFW_DIR/kernel.c"
+fi
+
+BUILD_LOG="/tmp/libkrunfw-build.log"
+echo "[rebuild-driver] running build_on_krunvm_persistent.sh (log: $BUILD_LOG)"
+if ! bash "$LK_LIBKRUNFW_DIR/build_on_krunvm_persistent.sh" > "$BUILD_LOG" 2>&1; then
+    fail "kernel build failed; see $BUILD_LOG"
+fi
+
+# Sanity check — vmlinux + kernel.c must exist after a successful build.
+if [ ! -f "$LK_KERNEL_DIR/vmlinux" ]; then
+    fail "kernel build reported success but vmlinux missing; see $BUILD_LOG"
+fi
+if [ ! -f "$LK_LIBKRUNFW_DIR/kernel.c" ]; then
+    fail "kernel build reported success but kernel.c missing; see $BUILD_LOG"
+fi
+
+echo "$(git_head_at "$LINUX_BIFROST")" > "$STAMP_DIR/stage-2.stamp"
+stage_ok
+
+# ---------------------------------------------------------------------
+# Stage 3 — kernel.c → libkrunfw.5.dylib
+# ---------------------------------------------------------------------
+
+stage_start 3 "kernel.c → libkrunfw.5.dylib"
+if ! ( cd "$LK_LIBKRUNFW_DIR" && make libkrunfw.5.dylib ); then
+    fail "make libkrunfw.5.dylib failed"
+fi
+if [ ! -f "$LK_LIBKRUNFW_DIR/libkrunfw.5.dylib" ]; then
+    fail "libkrunfw.5.dylib not produced by make"
+fi
+echo "$(git_head_at "$ROOT")" > "$STAMP_DIR/stage-3.stamp"
+stage_ok
+
+# ---------------------------------------------------------------------
+# Stage 4 — copy dylibs
+# ---------------------------------------------------------------------
+#
+# smolvm's link/run paths look in third_party/smolvm/lib/ for the
+# bundled libkrunfw, so we have to push the freshly built artifacts
+# in or the next cargo build links against stale bytes.
+
+stage_start 4 "dylib copy"
+SMOLVM_LIB="$ROOT/third_party/smolvm/lib"
+if [ ! -d "$SMOLVM_LIB" ]; then
+    fail "third_party/smolvm/lib does not exist"
+fi
+for f in libkrunfw.5.dylib libkrunfw.so.5.3.0; do
+    src="$LK_LIBKRUNFW_DIR/$f"
+    if [ ! -f "$src" ]; then
+        fail "expected build artifact missing: $src"
+    fi
+    cp "$src" "$SMOLVM_LIB/$f"
+done
+echo "$(git_head_at "$ROOT")" > "$STAMP_DIR/stage-4.stamp"
+stage_ok
+
+# ---------------------------------------------------------------------
+# Stage 5 — cargo smolvm build
+# ---------------------------------------------------------------------
+
+stage_start 5 "cargo smolvm build"
+SMOLVM_DIR="$ROOT/third_party/smolvm"
+if ! ( cd "$SMOLVM_DIR" && cargo build --release -p smolvm ); then
+    fail "cargo build --release -p smolvm failed"
+fi
+SMOLVM_BIN="$SMOLVM_DIR/target/release/smolvm"
+if [ ! -f "$SMOLVM_BIN" ]; then
+    fail "$SMOLVM_BIN not produced by cargo"
+fi
+echo "$(git_head_at "$ROOT")" > "$STAMP_DIR/stage-5.stamp"
+stage_ok
+
+# ---------------------------------------------------------------------
+# Stage 6 — codesign + entitlement validation
+# ---------------------------------------------------------------------
+#
+# build.rs MAY have already re-signed; do it unconditionally anyway
+# (codesign is cheap and idempotent) and then VALIDATE that the
+# hypervisor entitlement is actually present. Without this check
+# we'd ship a binary that boots into HV_DENIED at first hv_vm_create.
+
+stage_start 6 "codesign + entitlement validate"
+ENTITLEMENTS="$SMOLVM_DIR/smolvm.entitlements"
+if [ ! -f "$ENTITLEMENTS" ]; then
+    fail "entitlements plist missing: $ENTITLEMENTS"
+fi
+if ! codesign --force --sign - --entitlements "$ENTITLEMENTS" "$SMOLVM_BIN"; then
+    fail "codesign --force --sign failed"
+fi
+HYPER_COUNT="$(codesign -d --entitlements - "$SMOLVM_BIN" 2>&1 | grep -c "com.apple.security.hypervisor" || true)"
+if [ "$HYPER_COUNT" -lt 1 ]; then
+    fail "hypervisor entitlement absent after re-sign — check $ENTITLEMENTS plist syntax"
+fi
+echo "$(git_head_at "$ROOT")" > "$STAMP_DIR/stage-6.stamp"
+stage_ok
+
+echo "[rebuild-driver] all stages OK"

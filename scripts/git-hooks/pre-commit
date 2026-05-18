@@ -1,0 +1,64 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# pre-commit — guard kernel-patch drift.
+#
+# Runs `scripts/verify-patches.sh` if the staged commit touches any
+# path that can affect the linux-bifrost ↔ libkrunfw/patches/
+# mapping:
+#
+#   - third_party/linux-bifrost  (submodule pointer bump — implies
+#     new/amended commits on bifrost/v6.12.76)
+#   - third_party/smolvm         (submodule pointer bump that may
+#     itself bump libkrunfw)
+#   - scripts/verify-patches.sh  (the lint itself)
+#
+# Drift sources this catches:
+#   - amending/squashing commits on bifrost/v6.12.76 without
+#     re-running format-patch into libkrunfw/patches/
+#   - hand-editing libkrunfw/patches/*.patch (AGENTS.md anti-pattern)
+#   - new commits added to bifrost/v6.12.76 without a corresponding
+#     patch file
+#   - patch files added to libkrunfw/patches/ without a matching
+#     commit
+#
+# Bypass with `git commit --no-verify` if you genuinely need to
+# (e.g., committing a fix to the lint script itself in a state
+# where the lint doesn't yet pass).
+#
+# Install once per clone:
+#
+#   git config core.hooksPath scripts/git-hooks
+#
+
+set -eu
+
+# Look for any staged path under the kernel-patch surface.
+STAGED=$(git diff --cached --name-only)
+TRIGGERS='^(third_party/linux-bifrost$|third_party/smolvm$|scripts/verify-patches\.sh$)'
+
+if ! printf '%s\n' "$STAGED" | grep -qE "$TRIGGERS"; then
+    exit 0
+fi
+
+ROOT=$(git rev-parse --show-toplevel)
+SCRIPT="$ROOT/scripts/verify-patches.sh"
+
+if [ ! -x "$SCRIPT" ]; then
+    echo "[pre-commit] $SCRIPT not found or not executable; skipping drift check" >&2
+    exit 0
+fi
+
+echo "[pre-commit] kernel-patch path staged → running verify-patches.sh"
+if ! "$SCRIPT" >/dev/null 2>&1; then
+    echo
+    echo "[pre-commit] DRIFT detected — full report:"
+    "$SCRIPT" || true
+    echo
+    echo "[pre-commit] commit aborted.  Fix the drift then retry."
+    echo "[pre-commit] (or bypass with: git commit --no-verify)"
+    exit 1
+fi
+
+echo "[pre-commit] verify-patches OK"
+exit 0
