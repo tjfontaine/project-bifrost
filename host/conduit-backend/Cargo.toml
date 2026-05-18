@@ -1,0 +1,50 @@
+[package]
+name = "conduit-backend"
+version = "0.1.0"
+edition = "2021"
+description = "vhost-user backend exposing the conduit transport to libkrun and QEMU"
+license = "Apache-2.0"
+
+[dependencies]
+# Generic ConduitCore + control/data SHM plumbing — already
+# transport-agnostic, gets driven from this binary instead of
+# the in-tree libkrun adapter.
+krun-virtio-conduit = { path = "../virtio-conduit" }
+# The conduit crate's EventQueue trait returns
+# `Arc<utils::eventfd::EventFd>` (libkrun's own EventFd type
+# rather than vmm-sys-util's). Pulling in that crate avoids a
+# type mismatch in the EventQueueAdapter impl. Note this is a
+# layering concession flagged as a follow-up under the
+# "transport vs protocol vs application" boundary: the conduit
+# core should not depend on a libkrun-internal crate.
+utils = { path = "../../third_party/smolvm/libkrun/src/utils" }
+
+libc = "0.2"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+
+# vhost-user protocol. The upstream crates depend on
+# `vmm-sys-util::ScmSocket` which is Linux-only at the source
+# level; we substitute a forked vmm-sys-util that ports
+# sock_ctrl_msg to the macOS POSIX cmsg path (see workspace
+# `[patch.crates-io]` below).
+vhost = { version = "0.14", features = ["vhost-user-backend"] }
+vhost-user-backend = "0.18"
+virtio-bindings = "0.2"
+virtio-queue = "0.14"
+vm-memory = { version = "0.16", features = ["backend-mmap", "backend-atomic"] }
+vmm-sys-util = "0.14"
+
+# Pin both vhost crates and any transitive consumer to the
+# forked vmm-sys-util that builds on macOS. The fork lives at
+# third_party/vmm-sys-util, branch bifrost/macos-scm; it adds
+# macOS to the platform gates on sock_ctrl_msg and substitutes
+# 0 for the Linux-only MSG_NOSIGNAL flag. See that submodule's
+# commit history for the exact diff.
+[patch.crates-io]
+vmm-sys-util = { path = "../../third_party/vmm-sys-util" }
+# Also redirect vm-memory so the backend's mmap-region setup
+# uses the fstat-based check_file_offset that survives macOS
+# POSIX SHM fds (lseek returns ESPIPE on those).
+vm-memory = { path = "../../third_party/vm-memory" }
