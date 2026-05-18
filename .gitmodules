@@ -1,0 +1,22 @@
+[submodule "guest/linux-bifrost"]
+	path = third_party/linux-bifrost
+	url = https://github.com/tjfontaine/linux.git
+	branch = bifrost/v6.12.76
+	shallow = true
+[submodule "third_party/smolvm"]
+	path = third_party/smolvm
+	url = https://github.com/tjfontaine/smolvm.git
+	branch = bifrost
+[submodule "third_party/vmm-sys-util"]
+	path = third_party/vmm-sys-util
+	url = https://github.com/tjfontaine/vmm-sys-util.git
+	branch = bifrost/macos-scm
+[submodule "third_party/vm-memory"]
+	path = third_party/vm-memory
+	url = https://github.com/tjfontaine/vm-memory.git
+	branch = bifrost/macos-shm
+[submodule "guest/freebsd-bifrost"]
+	path = third_party/freebsd-bifrost
+	url = https://github.com/tjfontaine/freebsd-src.git
+	branch = bifrost/14.3
+	shallow = true
