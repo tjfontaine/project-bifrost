@@ -1,0 +1,86 @@
+# Demo smoke-suite CI gate.  Runs the demo smoke suite via
+# `host/bifrost/tests/demo_smoke.rs`, which shells out to
+# `examples/<demo>/run.sh` for each converted demo.
+#
+# The job needs:
+#   - macOS arm64 runner (smolvm + Hypervisor.framework)
+#   - sudo NOPASSWD coverage for host/*/* (cleanup.sh + bifrost-trace.sh)
+#   - smolvm binary built + libkrun.dylib + libkrunfw.5.dylib in lib/
+#   - BIFROST_VM_AVAILABLE=1 set so demo_smoke.rs actually runs the
+#     tests instead of skipping them
+#
+# Local runs:
+#   BIFROST_VM_AVAILABLE=1 cargo test \
+#     --manifest-path host/bifrost/Cargo.toml \
+#     --test demo_smoke -- --test-threads=1
+#
+# `--test-threads=1` is load-bearing: the harness's cleanup-trap
+# shares /bifrost-<pid> shmem region across demos and serializes
+# via process-wide cleanup; running concurrently would race.
+
+name: demos
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'host/bifrost/**'
+      - 'host/bifrost-wire/**'
+      - 'examples/**'
+      - 'host/runtime/bifrost-trace.sh'
+      - 'host/runtime/cleanup.sh'
+      - '.github/workflows/demos.yml'
+  workflow_dispatch:
+
+# A long timeout because each demo boots smolvm + runs a
+# 16-second trace + tears down.  10 demos × ~30 s + boot/teardown
+# overhead lands around 8-10 minutes.  Bound at 30 to leave
+# headroom for image pulls and slow CI hosts.
+jobs:
+  demo-smoke:
+    runs-on: [self-hosted, macos, arm64]
+    timeout-minutes: 30
+    env:
+      BIFROST_VM_AVAILABLE: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build host CLI (release)
+        run: |
+          cargo build --release --manifest-path host/bifrost/Cargo.toml
+
+      - name: Stage smolvm + dylibs
+        # The runner image is expected to have a pre-built
+        # libkrunfw.5.dylib + libkrun.dylib in third_party/smolvm/lib/
+        # (rebuilds happen out-of-band via tools/rebuild-driver).
+        # This step asserts the staging is valid before the smoke.
+        run: |
+          test -x third_party/smolvm/target/release/smolvm \
+            || (echo "smolvm binary missing; run 'cargo build --release -p smolvm' first" && exit 1)
+          test -f third_party/smolvm/lib/libkrunfw.5.dylib \
+            || (echo "libkrunfw.5.dylib missing; run tools/rebuild-driver first" && exit 1)
+          test -f third_party/smolvm/lib/libkrun.dylib \
+            || (echo "libkrun.dylib missing; run tools/rebuild-driver first" && exit 1)
+          test -f third_party/smolvm/libkrunfw/linux-6.12.76/vmlinux \
+            || (echo "vmlinux missing; needed for BTF resolution" && exit 1)
+          codesign -d --entitlements - third_party/smolvm/target/release/smolvm 2>/dev/null \
+            | grep -q "com.apple.security.hypervisor" \
+            || (echo "smolvm missing hypervisor entitlement; run host/runtime/stage-smolvm.sh" && exit 1)
+
+      - name: Run demo smoke suite
+        run: |
+          cargo test --release \
+            --manifest-path host/bifrost/Cargo.toml \
+            --test demo_smoke \
+            -- --test-threads=1 --nocapture
+
+      - name: Cleanup
+        if: always()
+        run: |
+          # Defensive teardown — the harness traps own this in the
+          # happy path, but a hard-killed runner leaves leftovers.
+          sudo -n host/runtime/cleanup.sh || true
+          pkill -KILL -f "examples/" || true

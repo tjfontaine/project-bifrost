@@ -1,0 +1,36 @@
+target/
+artifacts/
+Cargo.lock
+*.log
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.a
+*.so
+*.dylib
+.DS_Store
+.*.cmd
+Module.symvers
+modules.order
+*.long-type-*.txt
+harness_out.txt
+# Dev-time copies of the cargo-built bifrost CLI binary (the
+# stage-* scripts re-codesign in place so the deployed copy lives
+# outside target/).
+host/runtime/bifrost
+host/runtime/conduit-backend
+host/runtime/conduit_shm_diag
+host/bifrost/bifrost
+host/bifrost/dif_compile
+.claude/
+
+# tooling state (serena MCP server cache)
+.serena/
+
+# tools/rebuild-driver stamp files (track HEAD SHAs of inputs per stage)
+.bifrost-build-stamps/
+
+# sync-linux-patches.sh --export staging output
+.sync-linux-patches.out/
