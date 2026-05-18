@@ -1,0 +1,24 @@
+[package]
+name = "bifrost-dtrace-lower"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR GPL-2.0"
+description = "DOF/DIF parsing, ECB/action walking, DTrace action semantics, and the KernelAdapter trait that guest kernel modules implement. no_std, no host-only deps; consumed by host/bifrost and third_party/linux-bifrost/drivers/bifrost."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# `alloc` turns on the `Vec`-backed helpers used by the host CLI
+# (capability-fanout planner, per-target ECB status accumulation).
+# Off by default so the Linux driver Kbuild can depend on this crate
+# without pulling alloc.
+alloc = []
+
+[dependencies]
+# Intentionally none — `no_std`, no host-only deps. The wire-format
+# layer (DTRACE_SESSION_V1 magic, SHMEM v6 record kinds) lives in
+# bifrost-wire and is consumed alongside this crate, not from it,
+# so the two stay independently usable.
