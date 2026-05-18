@@ -1,0 +1,13 @@
+[package]
+name = "krun-virtio-conduit"
+version = "0.1.0-1.18.0"
+authors = ["The libkrun Authors"]
+edition = "2021"
+description = "Reusable virtio conduit control and shared-memory protocol"
+license = "Apache-2.0"
+repository = "https://github.com/containers/libkrun"
+
+[dependencies]
+libc = ">=0.2.39"
+log = "0.4.0"
+utils = { path = "../../third_party/smolvm/libkrun/src/utils" }
